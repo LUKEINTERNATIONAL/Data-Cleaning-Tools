@@ -99,6 +99,8 @@ def treatment(patient_id,date,gender,age,outcome)
     regimen = "5A"
   elsif (2019..2020).to_a.include?(date.year) and age > 12 and gender == "M"
     regimen = "13A"
+  elsif (2019..2020).to_a.include?(date.year) and age > 12 and gender == "F"
+    regimen = "5A"
   elsif (2019..2020).to_a.include?(date.year) and age > 50 and gender == "F"
     regimen = "13A"
   elsif age < 12
