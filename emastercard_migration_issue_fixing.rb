@@ -1,18 +1,49 @@
 require 'csv'
-
+require 'mysql2'
 def start
-    site_code = PatientIdentifier.where(identifier_type: 4).first.identifier.split("-").first.downcase
-    path = "../eMastercard2Nart/tmp/#{site_code}-patients-with-outcome-on-first-visit.csv"
+  site_code = PatientIdentifier.where(identifier_type: 4).first.identifier.split("-").first.downcase
+  path = "../eMastercard2Nart/tmp/#{site_code}-patients-with-outcome-on-first-visit.csv"
 
-    records = CSV.parse(File.read(path), headers: true)
-    puts "Let the magic begin!!"
+  patient_with_outcomes_on_first_visit = CSV.parse(File.read(path), headers: true).reject{|record|
+                                                       record["ARV Number"].blank? or record["Outcome"]=="Blank"}
+  #patient_without_visits = CSV.parse(File.read(path2), headers: true).reject{|record| record["ARV Number"].blank?}
+  @connector = old_emastercard_database
+  puts "Let the magic begin!!"
+  process(patient_with_outcomes_on_first_visit,"patients with outcomes on first visit",site_code)
+
+  puts "-----------------------------------------------------------------------------------------\n"
+  puts "Now performing other checks"
+  #create some temporary tables
+  end_date = "2020-03-31".to_date
+  create_tmp_patient_table
+  #load the data
+  load_data_into_temp_earliest_start_date(end_date)
+  #loading outcomes
+  update_cum_outcome(end_date)
+  #get outcomes
+  patient_ids = get_patients_with_outcomes.map{|pat| pat["patient_id"]}
+  patient_arv_ids = get_patient_identifiers(patient_ids)
+  missing_outcomes = get_patient_with_outcomes_inside_visit(patient_arv_ids)
+  puts missing_outcomes
+  puts "#{missing_outcomes.length} additional patients to be processed out of #{patient_arv_ids.length} patients"
+  process(missing_outcomes,"patients with outcomes inside visits",site_code)
+  #recheck the missing ARVS
+  #loading outcomes
+  missing_patient_finder(site_code,end_date)
+end
+
+def process(records,info,site_code)
     puts "=====#{records.length} patient records to be fixed==="
     @patient_ids = []
+    records = records.reject{|record| record["ARV Number"].blank? or record["Outcome"]=="Blank"}
+
     records.each do |record|
       #patient_details
-      arv_identifier = site_code+"-ARV-"+record["ARV Number"]
+      arv_identifier = site_code+"-ARV-"+record["ARV Number"].to_s
+      identifier = record["ARV Number"]
       visit_date = record["Outcome Date"].to_date
       date = visit_date
+      puts arv_identifier.upcase
       patient_id = PatientIdentifier.where(identifier: arv_identifier.upcase).first.patient_id
       @patient_ids << patient_id
       gender = patient_gender(patient_id)
@@ -23,23 +54,11 @@ def start
       reception(patient_id,visit_date,age)
       vitals(patient_id,date,gender,age)
       consultation(patient_id,date)
-      treatment(patient_id,date,gender,age,outcome)
+      treatment(patient_id,date,gender,age,outcome,identifier)
     end
-    puts "-----------------------------------------------------------------------------------------\n"
-    puts "#{@patient_ids.length} patients with outcomes on first visit have been sucessfully fixed \n"
-    puts "Now performing other checks"
-    #create some temporary tables
-    end_date = "2020-03-31".to_date
-    create_tmp_patient_table
-    #load the data
-    load_data_into_temp_earliest_start_date(end_date)
-    #loading outcomes
-    update_cum_outcome(end_date)
-    #get outcomes
-    patient_ids = get_patients_with_outcomes.map{|pat| pat["patient_id"]}
-    patient_arv_ids = get_patient_identifiers(patient_ids)
-    missing_patient_finder(site_code,patient_arv_ids)
-
+    #Use this chance to destroy all ambiguous default outcomes in patient state tabe
+    pat_states = PatientState.where(state: 12).destroy_all
+    puts "#{@patient_ids.length} { #{info}} have been sucessfully fixed \n"
 end
 
 def reception(patient_id,date,age)
@@ -91,23 +110,29 @@ def consultation(patient_id,date)
    obs_value_coded(patient_id,encounter_id,7459,date,7454)
 end
 
-def treatment(patient_id,date,gender,age,outcome)
-  regimen = ""
-  if date.year < 2012 and age > 12
-    regimen = "1A"
-  elsif (2012..2018).to_a.include?(date.year) and age > 12
-    regimen = "5A"
-  elsif (2019..2020).to_a.include?(date.year) and age > 12 and gender == "M"
-    regimen = "13A"
-  elsif (2019..2020).to_a.include?(date.year) and age > 12 and gender == "F"
-    regimen = "5A"
-  elsif (2019..2020).to_a.include?(date.year) and age > 50 and gender == "F"
-    regimen = "13A"
-  elsif age < 12
-    regimen = "2P"
-  else
-    regimen = "Other"
+def treatment(patient_id,date,gender,age,outcome,arv_identifier)
+  #initualize regimen with what is old emastercard
+  #regimen = get_regimen_from_old_db(arv_identifier)
+  regimen = get_regimen_from_old_db(arv_identifier)
+  puts regimen
+  if regimen.blank?
+        if date.year < 2012 and age > 12
+          regimen = "1A"
+        elsif (2012..2018).to_a.include?(date.year) and age > 12
+          regimen = "5A"
+        elsif (2019..2020).to_a.include?(date.year) and age > 12 and gender == "M"
+          regimen = "13A"
+        elsif (2019..2020).to_a.include?(date.year) and age > 12 and gender == "F"
+          regimen = "5A"
+        elsif (2019..2020).to_a.include?(date.year) and age > 50 and gender == "F"
+          regimen = "13A"
+        elsif age < 12
+          regimen = "2P"
+        else
+          regimen = "Other"
+        end
   end
+  regimen = regimen == "1P" ? "2P":regimen #convert legacy legimen
   puts "Now create treatment encounter for patient: #{patient_id}"
   encounter_id = create_encounter(patient_id,25,date)
   #create drug order
@@ -406,37 +431,85 @@ end
 def get_patients_with_outcomes
 
      patients= ActiveRecord::Base.connection.select_all(
-                     "SELECT * FROM temp_patient_outcomes GROUP BY patient_id"
+                     "SELECT * FROM temp_patient_outcomes WHERE cum_outcome <> 'Unknown' GROUP BY patient_id"
                   )
      return patients
 end
 
 def get_patient_identifiers(patient_ids)
 
+
   patients= ActiveRecord::Base.connection.select_all(
               "SELECT * FROM patient_identifier WHERE identifier_type = 4 AND patient_id
-                IN (#{patient_ids.join(',')}) GROUP BY patient_id"
+                NOT IN (#{patient_ids.join(',')}) GROUP BY patient_id"
                 ).map{|identifier| identifier["identifier"].split("-").last.to_i}.sort!
 
 end
 
-def missing_patient_finder(site_code,arv_ids)
-     missing_arv_ids = []
-     i = 1
-     while i < arv_ids.max do
-      if not arv_ids.include?(i)
-        missing_arv_ids << i
-      end
-      i+=1 #incremant i
-     end
-     unless missing_arv_ids.blank?
+def missing_patient_finder(site_code,end_date)
+  create_tmp_patient_table
+  load_data_into_temp_earliest_start_date(end_date)
+  update_cum_outcome(end_date)
+  patient_ids = get_patients_with_outcomes.map{|pat| pat["patient_id"]}
+  patient_arv_ids = get_patient_identifiers(patient_ids)
+
+     unless patient_arv_ids.blank?
       puts "After migration cohort report could be missing the following ARV numbers:"
-         missing_arv_ids.each do |arv_id|
+      patient_arv_ids.each do |arv_id|
            puts "======== #{site_code.upcase}-ARV-#{arv_id} ====="
          end
      end
-
 end
+
+def get_patient_with_outcomes_inside_visit(missing_arv_ids)
+       data = []
+       missing_arv_ids.each do |id|
+         line = get_patient_clinic_details_from_old_db(id)
+        unless line.blank?
+          data << line
+        end
+       end
+    return data
+end
+
+def get_patient_clinic_details_from_old_db(identifier)
+  adverse_outcome_concept = 48
+  data = Hash.new()
+  patient_id = get_patient_id_from_old_db(identifier)
+  outcome = @connector.query(
+                     "SELECT * FROM emastercard35.obs where person_id = #{patient_id} AND
+                      concept_id = #{adverse_outcome_concept} AND value_text IN ('TO','D','Def')").first
+
+   unless outcome["obs_datetime"].blank?
+        data = {"ARV Number"=>identifier,"Outcome"=>outcome["value_text"],
+                "Outcome Date"=>outcome["obs_datetime"].to_s}
+   end
+   return data
+end
+
+def get_patient_id_from_old_db(identifier)
+  patient_id = @connector.query("SELECT patient_id FROM patient_identifier
+                                                WHERE identifier= #{identifier}").first["patient_id"]
+end
+
+def get_regimen_from_old_db(arv_identifier)
+  regimen_concept = 22
+  patient_id = get_patient_id_from_old_db(arv_identifier)
+  regimen = @connector.query("SELECT * FROM obs where person_id = #{patient_id} AND
+                            concept_id = #{regimen_concept} AND value_text IS NOT null").first["value_text"] rescue nil
+  return regimen
+end
+
+def old_emastercard_database
+   @db_host  = "localhost"
+   @db_user  = "root"
+   @db_pass  = "p@ssword"
+   @db_name = "emastercard35"
+
+   connector = Mysql2::Client.new(:host => @db_host, :username => @db_user, :password => @db_pass, :database => @db_name)
+  return connector
+end
+
 
 start
 
