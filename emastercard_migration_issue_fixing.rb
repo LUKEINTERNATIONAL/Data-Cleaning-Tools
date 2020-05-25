@@ -118,7 +118,7 @@ def treatment(patient_id,date,gender,age,outcome,arv_identifier)
   #initualize regimen with what is old emastercard
   #regimen = get_regimen_from_old_db(arv_identifier)
   regimen = get_regimen_from_old_db(arv_identifier)
-  puts regimen
+  puts "Regimen from old db is: #{regimen}"
   if regimen.blank?
         if date.year < 2012 and age > 12
           regimen = "1A"
@@ -137,6 +137,7 @@ def treatment(patient_id,date,gender,age,outcome,arv_identifier)
         end
   end
   regimen = regimen == "1P" ? "2P":regimen #convert legacy legimen
+  puts "System accepted regimen is: #{regimen}"
   puts "Now create treatment encounter for patient: #{patient_id}"
   encounter_id = create_encounter(patient_id,25,date)
   #create drug order
