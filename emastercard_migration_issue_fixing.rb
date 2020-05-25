@@ -1,5 +1,6 @@
 require 'csv'
 require 'mysql2'
+require 'yaml'
 def start
   site_code = PatientIdentifier.where(identifier_type: 4).first.identifier.split("-").first.downcase
   path = "../eMastercard2Nart/tmp/#{site_code}-patients-with-outcome-on-first-visit.csv"
@@ -24,9 +25,11 @@ def start
   patient_ids = get_patients_with_outcomes.map{|pat| pat["patient_id"]}
   patient_arv_ids = get_patient_identifiers(patient_ids)
   missing_outcomes = get_patient_with_outcomes_inside_visit(patient_arv_ids)
-  puts missing_outcomes
-  puts "#{missing_outcomes.length} additional patients to be processed out of #{patient_arv_ids.length} patients"
-  process(missing_outcomes,"patients with outcomes inside visits",site_code)
+  unless missing_outcomes.blank?
+      puts missing_outcomes
+      puts "#{missing_outcomes.length} additional patients to be processed out of #{patient_arv_ids.length} patients"
+      process(missing_outcomes,"patients with outcomes inside visits",site_code)
+  end
   #recheck the missing ARVS
   #loading outcomes
   missing_patient_finder(site_code,end_date)
@@ -480,7 +483,7 @@ def get_patient_clinic_details_from_old_db(identifier)
                      "SELECT * FROM emastercard35.obs where person_id = #{patient_id} AND
                       concept_id = #{adverse_outcome_concept} AND value_text IN ('TO','D','Def')").first
 
-   unless outcome["obs_datetime"].blank?
+   unless outcome.blank?
         data = {"ARV Number"=>identifier,"Outcome"=>outcome["value_text"],
                 "Outcome Date"=>outcome["obs_datetime"].to_s}
    end
@@ -501,10 +504,11 @@ def get_regimen_from_old_db(arv_identifier)
 end
 
 def old_emastercard_database
-   @db_host  = "localhost"
-   @db_user  = "root"
-   @db_pass  = "p@ssword"
-   @db_name = "emastercard35"
+   config = YAML.load(File.open("../eMastercard2Nart/config.yaml"))
+   @db_host  = config["emastercard"]["host"]
+   @db_user  = config["emastercard"]["username"]
+   @db_pass  = config["emastercard"]["password"]
+   @db_name = config["emastercard"]["database"]
 
    connector = Mysql2::Client.new(:host => @db_host, :username => @db_user, :password => @db_pass, :database => @db_name)
   return connector
