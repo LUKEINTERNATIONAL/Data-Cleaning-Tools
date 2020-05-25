@@ -15,7 +15,7 @@ def start
   puts "-----------------------------------------------------------------------------------------\n"
   puts "Now performing other checks"
   #create some temporary tables
-  end_date = "2020-03-31".to_date
+  end_date = Date.today.to_date
   create_tmp_patient_table
   #load the data
   load_data_into_temp_earliest_start_date(end_date)
@@ -24,6 +24,7 @@ def start
   #get outcomes
   patient_ids = get_patients_with_outcomes.map{|pat| pat["patient_id"]}
   patient_arv_ids = get_patient_identifiers(patient_ids)
+  puts patient_arv_ids
   missing_outcomes = get_patient_with_outcomes_inside_visit(patient_arv_ids)
   unless missing_outcomes.blank?
       puts missing_outcomes
@@ -466,12 +467,14 @@ end
 
 def get_patient_with_outcomes_inside_visit(missing_arv_ids)
        data = []
-       missing_arv_ids.each do |id|
-         line = get_patient_clinic_details_from_old_db(id)
-        unless line.blank?
-          data << line
+        unless missing_arv_ids.blank?
+          missing_arv_ids.each do |id|
+            line = get_patient_clinic_details_from_old_db(id)
+              unless line.blank?
+                data << line
+              end
+          end
         end
-       end
     return data
 end
 
