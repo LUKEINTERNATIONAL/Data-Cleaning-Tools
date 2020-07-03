@@ -1,7 +1,7 @@
 require "csv"
 def start
   #make sure you edit the path to where you have saved your csv file
-  path = "./kaphatenga_unknown_reason.csv"
+  path = "./bin/Data-Cleaning-Tools/site_unknown_reason.csv"
   patients = CSV.parse(File.read(path), headers: true)
   process(patients)
 end
